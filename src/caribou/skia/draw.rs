@@ -4,8 +4,8 @@ use std::io::Read;
 use skia_safe::{Bitmap, Canvas, ClipOp, Codec, Color, Data, FontMgr, FontStyle, Image, ImageInfo, Paint, PaintStyle, Pixmap, Point, Rect, TextBlob};
 use skia_safe::font_style::{Slant, Weight, Width};
 use crate::caribou::draw::{Batch, BatchOp, Brush, Font, FontSlant, Material, Path, PathOp, Pict, TextAlignment, Transform};
-use crate::caribou::math::ScalarPair;
-use crate::caribou::skia::boilerplate::SKIA_ENV;
+use crate::caribou::math::{IntPair, ScalarPair};
+use crate::caribou::skia::runtime::{SKIA_ENV, skia_gl_get_env, skia_gl_set_env};
 
 pub fn skia_render_batch(canvas: &mut Canvas, batch: Batch) {
     for op in batch.iter() {
@@ -59,6 +59,7 @@ pub fn skia_render_batch(canvas: &mut Canvas, batch: Batch) {
             BatchOp::Batch { transform, batch } => {
                 let save = canvas.save();
                 skia_apply_transform(canvas, transform);
+                // println!("{:?}", canvas.local_to_device_as_3x3());
                 skia_render_batch(canvas, batch.clone());
                 canvas.restore_to_count(save);
             }

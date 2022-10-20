@@ -1,20 +1,22 @@
 use std::convert::Into;
-use std::rc::Rc;
+use std::time::{Duration, Instant};
 use glutin::{ContextWrapper, GlProfile, PossiblyCurrent};
 use glutin::event_loop::{ControlFlow, EventLoop};
 use glutin::window::{Window, WindowBuilder};
 use gl::types::*;
-use glutin::dpi::{LogicalPosition, Position};
-use glutin::event::{ElementState, Event, Ime, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent};
+use glutin::dpi::{Position};
+use glutin::event::{ElementState, Event, Ime, KeyboardInput, ModifiersState, MouseButton, ScanCode, VirtualKeyCode, WindowEvent};
+use log::{info, warn};
 use skia_safe::gpu::{BackendRenderTarget, DirectContext, SurfaceOrigin};
 use skia_safe::gpu::gl::{Format, FramebufferInfo};
-use skia_safe::{Canvas, Color, Color4f, ColorType, Data, Font, FontMgr, FontStyle, Matrix, Paint, PaintStyle, Picture, PictureRecorder, Point, Rect, Size, Surface, TextBlob, TextBlobBuilder, Vector};
-use skia_safe::PaintCap::Butt;
-use crate::caribou::basic::{Button, ButtonData, ButtonState, Layout};
-use crate::caribou::draw;
-use crate::caribou::draw::{Batch, BatchOp, Brush, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
+use skia_safe::{Canvas, Color, ColorType, FontMgr, FontStyle, Matrix, Paint, PaintStyle, Picture, PictureRecorder, Point, Rect, Size, Surface, TextBlob, TextBlobBuilder, Vector};
+use crate::caribou::basic::{Layout};
+use crate::caribou::{Caribou};
+use crate::caribou::draw::{BatchConsolidation, BatchOp, Brush, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
+use crate::caribou::input::{Key, KeyEvent};
 use crate::caribou::math::IntPair;
-use crate::caribou::skia::draw::{skia_read_pict, skia_render_batch};
+use crate::caribou::skia::draw::{skia_render_batch};
+use crate::caribou::skia::input::gl_virtual_to_key;
 
 type WindowedContext = ContextWrapper<PossiblyCurrent, Window>;
 
@@ -39,15 +41,23 @@ pub(crate) static mut SKIA_ENV: Option<SkiaEnv> = None;
 
 static mut MOUSE_POS: IntPair = IntPair::new(0, 0);
 
-fn set_skia_env(env: SkiaEnv) {
+pub fn skia_gl_set_env(env: SkiaEnv) {
     unsafe {
         SKIA_ENV = Some(env);
     }
 }
 
-fn get_skia_env() -> &'static mut SkiaEnv {
+pub fn skia_gl_get_env() -> &'static mut SkiaEnv {
     unsafe {
         SKIA_ENV.as_mut().unwrap()
+    }
+}
+
+static mut KEY_RETAIN_VEC: Vec<Key> = Vec::new();
+
+pub fn glut_cb_key_retain_vec() -> &'static mut Vec<Key> {
+    unsafe {
+        &mut KEY_RETAIN_VEC
     }
 }
 
@@ -131,66 +141,15 @@ pub fn skia_bootstrap() {
     // `DirectContext`.
     //
     // https://github.com/rust-skia/rust-skia/issues/476
-
-    let mut batch = Batch::new();
-    batch.add(BatchOp::Pict {
-        transform: Transform::default(),
-        pict: skia_read_pict("C:\\Users\\raida\\Pictures\\kirby.jpg"),
-    });
-    batch.add(BatchOp::Path {
-        transform: Transform::default(),
-        path: Path::from_vec(vec![
-            PathOp::Line((0.0, 1080.0 / 2.0).into(),
-                         (1920.0, 1080.0 / 2.0).into()),
-            PathOp::Line((1920.0 / 2.0, 0.0).into(),
-                         (1920.0 / 2.0, 1080.0).into()),
-        ]),
-        brush: Brush {
-            stroke_mat: Material::Solid(0.0, 0.0, 0.0, 1.0),
-            fill_mat: Material::Transparent,
-            stroke_width: 1.0
-        }
-    });
-    batch.add(BatchOp::Text {
-        transform: Transform {
-            translate: (1920.0 / 2.0, 1080.0 / 2.0).into(),
-            ..Transform::default()
-        },
-        text: Rc::new("Hello, World".to_string()),
-        font: draw::Font {
-            family: Rc::new("Arial".to_string()),
-            size: 72.0,
-            weight: 400,
-            slant: FontSlant::Normal
-        },
-        alignment: TextAlignment::Center,
-        brush: Brush {
-            stroke_mat: Material::Solid(0.0, 0.0, 0.0, 1.0),
-            fill_mat: Material::Solid(0.0, 0.0, 0.0, 1.0),
-            stroke_width: 1.0
-        }
-    });
-
-    let button1 = Button::create();
-    Button::interpret(&button1).unwrap().apply_default_style();
-    let button2 = Button::create();
-    button2.position.set((50.0, 20.0).into());
-    Button::interpret(&button2).unwrap().apply_default_style();
-    let layout = Layout::create();
-    Layout::interpret(&layout).unwrap().children.borrow_mut().push(button1);
-    Layout::interpret(&layout).unwrap().children.borrow_mut().push(button2);
-    layout.size.set((640.0, 400.0).into());
-
-
-    set_skia_env(SkiaEnv {
+    skia_gl_set_env(SkiaEnv {
         surface,
         gr_context,
         windowed_context,
     });
 
     el.run(move |event, _, control_flow| {
-        let env = get_skia_env();
-        *control_flow = ControlFlow::Wait;
+        let env = skia_gl_get_env();
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16));
 
         #[allow(deprecated)]
         match event {
@@ -205,15 +164,34 @@ pub fn skia_bootstrap() {
                 WindowEvent::KeyboardInput {
                     input:
                     KeyboardInput {
+                        scancode,
                         virtual_keycode,
                         modifiers,
                         ..
                     },
                     ..
                 } => {
+                    println!("Keyboard input: {:?}", virtual_keycode);
                     if modifiers.logo() {
                         if let Some(VirtualKeyCode::Q) = virtual_keycode {
                             *control_flow = ControlFlow::Exit;
+                        }
+                    }
+                    if let Some(vir) = virtual_keycode {
+                        let key = gl_virtual_to_key(vir);
+                        let ret_vec = glut_cb_key_retain_vec();
+                        if ret_vec.contains(&key) {
+                            ret_vec.retain(|x| *x != key);
+                            Caribou::instance().on_key_up.broadcast(KeyEvent {
+                                key,
+                                modifiers: vec![]
+                            });
+                        } else {
+                            ret_vec.push(key);
+                            Caribou::instance().on_key_down.broadcast(KeyEvent {
+                                key,
+                                modifiers: vec![]
+                            });
                         }
                     }
                     frame += 1;
@@ -221,18 +199,18 @@ pub fn skia_bootstrap() {
                 }
                 WindowEvent::CursorEntered { .. } => {
                     println!("Cursor entered");
-                    layout.on_mouse_enter.broadcast();
+                    Caribou::root_component().on_mouse_enter.broadcast();
                 }
                 WindowEvent::CursorLeft { .. } => {
                     println!("Cursor left");
-                    layout.on_mouse_leave.broadcast();
+                    Caribou::root_component().on_mouse_leave.broadcast();
                 }
                 WindowEvent::CursorMoved {
                     position,
                     modifiers,
                     ..
                 } => {
-                    layout.on_mouse_move.broadcast(
+                    Caribou::root_component().on_mouse_move.broadcast(
                         (position.x as i32, position.y as i32).into());
                 }
                 WindowEvent::MouseInput {
@@ -245,10 +223,10 @@ pub fn skia_bootstrap() {
                         MouseButton::Left => {
                             match state {
                                 ElementState::Pressed => {
-                                    layout.on_mouse_down.broadcast();
+                                    Caribou::root_component().on_primary_down.broadcast();
                                 }
                                 ElementState::Released => {
-                                    layout.on_mouse_up.broadcast();
+                                    Caribou::root_component().on_primary_up.broadcast();
                                 }
                             }
                         }
@@ -277,33 +255,12 @@ pub fn skia_bootstrap() {
                 {
                     let canvas = env.surface.canvas();
                     canvas.clear(Color::WHITE);
+                    canvas.reset_matrix();
+                    // canvas.scale((1.25, 1.25)); //TODO: DPI awareness
                     canvas.save();
-                    //canvas.scale((0.5, 0.5));
-                    //skia_render_batch(canvas, batch.clone());
-                    skia_render_batch(canvas, layout.on_draw.broadcast()[0].clone());
-                    // canvas.draw_image(&img, (0.0, 0.0), None);
+                    skia_render_batch(canvas, Caribou::root_component().on_draw
+                            .broadcast().consolidate());
                     canvas.restore();
-                    // let fm = FontMgr::default();
-                    // let fs = FontStyle::new(Weight::BOLD, Width::NORMAL, Slant::Upright);
-                    // let tf = fm
-                    //     .match_family_style("Arial", fs)
-                    //     .unwrap();
-                    // let mut sf = Font::from_typeface(tf, 24.0);
-                    // sf.set_edging(Edging::SubpixelAntiAlias);
-                    // let tb = TextBlob::from_str("Hello, world!", &sf).unwrap();
-                    // let mut pa = Paint::new(Color4f::new(0.0, 0.0, 0.0, 1.0), None);
-                    // pa.set_stroke_width(1.5);
-                    // pa.set_style(PaintStyle::Stroke);
-                    // let pa2 = Paint::new(Color4f::new(1.0, 0.0, 0.0, 1.0), None);
-                    // let (sc, sf) = sf.measure_str("Hello, world!", None);
-                    // canvas.save();
-                    // canvas.translate((100.0, 100.0));
-                    // canvas.rotate(30.0, Some(Point::new(0.0, 0.0)));
-                    // canvas.clip_rect(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), Some(ClipOp::Intersect), Some(true));
-                    // canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), &pa2);
-                    // canvas.restore();
-                    // canvas.draw_rect(sf.with_offset((0.0, 20.0)), &pa2);
-                    // canvas.draw_text_blob(&tb, (0.0, 20.0), &pa);
                 }
                 env.surface.canvas().flush();
                 env.windowed_context.swap_buffers().unwrap();

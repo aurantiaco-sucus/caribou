@@ -2,10 +2,10 @@ use std::borrow::Borrow;
 use std::cell::{Ref, RefCell};
 use std::rc::{Rc, Weak};
 use crate::caribou::draw::{Batch, BatchConsolidation, BatchOp, Brush, Font, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
-use crate::caribou::{ComponentRcVec, Event, Property, Subscriber};
+use crate::caribou::{ComponentRcVec, Event, EventInit, Property, PropertyInit, Subscriber, ZeroArgEvent};
 use crate::caribou::math::{IntPair, Region};
-use crate::caribou::skia::draw::skia_request_redraw;
-use crate::Component;
+use crate::{Caribou, Component};
+use crate::caribou::input::Key;
 
 pub struct Layout;
 
@@ -75,18 +75,18 @@ impl Layout {
             }
             cur_hov.clear();
         }));
-        comp.on_mouse_down.subscribe(Box::new(|comp| {
+        comp.on_primary_down.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<LayoutData>().unwrap();
             let cur_hov = data.cur_hov.borrow_mut();
             for child in cur_hov.iter() {
-                child.on_mouse_down.broadcast();
+                child.on_primary_down.broadcast();
             }
         }));
-        comp.on_mouse_up.subscribe(Box::new(|comp| {
+        comp.on_primary_up.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<LayoutData>().unwrap();
             let cur_hov = data.cur_hov.borrow_mut();
             for child in cur_hov.iter() {
-                child.on_mouse_up.broadcast();
+                child.on_primary_up.broadcast();
             }
         }));
         comp.data.set(Some(Box::new(LayoutData {
@@ -118,12 +118,13 @@ pub enum ButtonState {
 
 pub struct ButtonData {
     pub text: Property<Rc<String>>,
-    pub draw_normal: Event<Box<dyn Fn(Rc<Component>) -> Batch>>,
-    pub draw_hover: Event<Box<dyn Fn(Rc<Component>) -> Batch>>,
-    pub draw_pressed: Event<Box<dyn Fn(Rc<Component>) -> Batch>>,
-    pub draw_disabled: Event<Box<dyn Fn(Rc<Component>) -> Batch>>,
-    pub state: Property<ButtonState>,
+    pub draw_normal: ZeroArgEvent<Batch>,
+    pub draw_hover: ZeroArgEvent<Batch>,
+    pub draw_pressed: ZeroArgEvent<Batch>,
+    pub draw_disabled: ZeroArgEvent<Batch>,
     pub enabled: Property<bool>,
+    state: RefCell<ButtonState>,
+    focused: RefCell<bool>,
 }
 
 impl Button {
@@ -131,7 +132,7 @@ impl Button {
         let comp = Component::create();
         comp.on_draw.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            let state = data.state.get();
+            let state = data.state.borrow();
             let enabled =  *data.enabled.get();
             if enabled {
                 match &*state {
@@ -143,43 +144,82 @@ impl Button {
                 data.draw_disabled.broadcast().consolidate()
             }
         }));
-        comp.on_mouse_down.subscribe(Box::new(|comp| {
+        comp.on_primary_down.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            data.state.set(ButtonState::Pressed);
-            skia_request_redraw();
+            data.state.replace(ButtonState::Pressed);
+            Caribou::request_redraw();
+            Caribou::instance().focused_component.set(Rc::downgrade(&comp));
         }));
-        comp.on_mouse_up.subscribe(Box::new(|comp| {
+        comp.on_primary_up.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            data.state.set(ButtonState::Hover);
+            data.state.replace(ButtonState::Hover);
             let enabled = *data.enabled.get();
             if enabled {
                 comp.action.broadcast(Rc::new(()));
             }
-            skia_request_redraw();
+            Caribou::request_redraw();
         }));
         comp.on_mouse_enter.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            data.state.set(ButtonState::Hover);
-            skia_request_redraw();
+            data.state.replace(ButtonState::Hover);
+            Caribou::request_redraw();
         }));
         comp.on_mouse_leave.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            data.state.set(ButtonState::Normal);
-            skia_request_redraw();
+            data.state.replace(ButtonState::Normal);
+            Caribou::request_redraw();
         }));
         comp.size.set((100.0, 30.0).into());
         comp.data.set(Some(Box::new(ButtonData {
-            text: Property::new(Rc::new("Button".to_string()),
-                                Rc::downgrade(&comp)),
-            draw_normal: Event::new(Rc::downgrade(&comp)),
-            draw_hover: Event::new(Rc::downgrade(&comp)),
-            draw_pressed: Event::new(Rc::downgrade(&comp)),
-            draw_disabled: Event::new(Rc::downgrade(&comp)),
-            state: Property::new(ButtonState::Normal,
-                                 Rc::downgrade(&comp)),
-            enabled: Property::new(true,
-                                   Rc::downgrade(&comp)),
+            text: comp.init_property(Rc::new("Button".to_string())),
+            draw_normal: comp.init_event(),
+            draw_hover: comp.init_event(),
+            draw_pressed: comp.init_event(),
+            draw_disabled: comp.init_event(),
+            enabled: comp.init_property(true),
+            state: RefCell::new(ButtonState::Normal),
+            focused: RefCell::new(false)
         })));
+        comp.on_gain_focus.subscribe(Box::new(|comp| {
+            let data = comp.data.get_as::<ButtonData>().unwrap();
+            if *data.enabled.get() {
+                data.focused.replace(true);
+                Caribou::request_redraw();
+                println!("Gained focus!");
+                true
+            } else {
+                false
+            }
+        }));
+        comp.on_lose_focus.subscribe(Box::new(|comp| {
+            println!("Lost focus!");
+            let data = comp.data.get_as::<ButtonData>().unwrap();
+            data.focused.replace(false);
+            Caribou::request_redraw();
+            true
+        }));
+        comp.on_key_down.subscribe(Box::new(|comp, event| {
+            let data = comp.data.get_as::<ButtonData>().unwrap();
+            match event.key {
+                Key::Return | Key::Space | Key::NumpadEnter => {
+                    data.state.replace(ButtonState::Pressed);
+                    Caribou::request_redraw();
+                }
+                _ => {}
+            }
+        }));
+        comp.on_key_up.subscribe(Box::new(|comp, event| {
+            let data = comp.data.get_as::<ButtonData>().unwrap();
+            match event.key {
+                Key::Return | Key::Space | Key::NumpadEnter => {
+                    data.state.replace(ButtonState::Normal);
+                    comp.action.broadcast(Rc::new(()));
+                    Caribou::request_redraw();
+                }
+                _ => {}
+            }
+        }));
+        Caribou::register_auto_tab_order(&comp);
         comp
     }
 
@@ -207,6 +247,20 @@ fn button_default_style_on_draw(
                 stroke_width: 2.0
             }
         });
+        if *data.focused.borrow() {
+            batch.add(BatchOp::Path {
+                transform: Transform::default(),
+                path: Path::from_vec(vec![
+                    PathOp::Rect((1.0, 1.0).into(),
+                                 *comp.size.get() - (2.0, 2.0).into()),
+                ]),
+                brush: Brush {
+                    stroke_mat: Material::Solid(0.0, 0.0, 0.0, 1.0),
+                    fill_mat: Material::Transparent,
+                    stroke_width: 2.0
+                }
+            });
+        }
         batch.add(BatchOp::Text {
             transform: Transform {
                 translate: comp.size.get().times(0.5),
@@ -252,5 +306,64 @@ impl ButtonData {
             Material::Solid(0.95, 0.95, 0.95, 1.0),
             Material::Solid(0.4, 0.4, 0.4, 1.0),
         ));
+    }
+}
+
+pub struct TextField;
+
+pub struct TextFieldData {
+    pub text: Property<String>,
+    pub enabled: Property<bool>,
+    pub focused: RefCell<bool>,
+    pub draw_unfocused: ZeroArgEvent<Batch>,
+    pub draw_focused: ZeroArgEvent<Batch>,
+    pub draw_disabled: ZeroArgEvent<Batch>,
+    pre_edit: RefCell<Option<String>>,
+}
+
+impl TextField {
+    pub fn create() -> Rc<Component> {
+        let comp = Component::create();
+        comp.on_draw.subscribe(Box::new(|comp| {
+            let data = comp.data.get_as::<TextFieldData>().unwrap();
+            if *data.focused.borrow() {
+                data.draw_focused.broadcast().consolidate()
+            } else {
+                data.draw_unfocused.broadcast().consolidate()
+            }
+        }));
+        comp.on_primary_down.subscribe(Box::new(|comp| {
+            let data = comp.data.get_as::<TextFieldData>().unwrap();
+            if *data.enabled.get() {
+                Caribou::instance().focused_component.set(Rc::downgrade(&comp));
+            }
+        }));
+        comp.on_gain_focus.subscribe(Box::new(|comp| {
+            let data = comp.data.get_as::<TextFieldData>().unwrap();
+            if *data.enabled.get() {
+                *data.focused.borrow_mut() = true;
+                Caribou::request_redraw();
+                true
+            } else {
+                false
+            }
+        }));
+        comp.on_lose_focus.subscribe(Box::new(|comp| {
+            let data = comp.data.get_as::<TextFieldData>().unwrap();
+            *data.focused.borrow_mut() = false;
+            Caribou::request_redraw();
+            true
+        }));
+        comp.size.set((160.0, 30.0).into());
+        comp.data.set(Some(Box::new(TextFieldData {
+            text: comp.init_property(String::new()),
+            enabled: comp.init_property(true),
+            focused: false.into(),
+            draw_unfocused: comp.init_event(),
+            draw_focused: comp.init_event(),
+            draw_disabled: comp.init_event(),
+            pre_edit: None.into(),
+        })));
+        comp
     }
 }
