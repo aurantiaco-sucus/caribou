@@ -10,3 +10,4 @@ gl = "0.14.0"
 glutin = "0.29.1"
 skia-safe = { version = "0.55.0", features = ["gpu", "gl"] }
 log = "0.4.17"
+tokio = "1.21.2"

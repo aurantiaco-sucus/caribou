@@ -1,30 +1,27 @@
 use std::borrow::Borrow;
 use std::cell::{Ref, RefCell};
-use std::rc::{Rc, Weak};
-use crate::caribou::draw::{Batch, BatchConsolidation, BatchOp, Brush, Font, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
-use crate::caribou::{ComponentRcVec, Event, EventInit, Property, PropertyInit, Subscriber, ZeroArgEvent};
+use std::rc::Rc;
+use crate::caribou::batch::{Batch, BatchConsolidation, BatchOp, Brush, Font, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
 use crate::caribou::math::{IntPair, Region};
-use crate::{Caribou, Component};
+use crate::Caribou;
+use crate::caribou::widget::{create_widget, Widget, WidgetInner, WidgetRef, WidgetVec, WidgetRefVec, WidgetRefer, WidgetAcquire};
+use crate::caribou::event::{Event, EventInit, Subscriber, ZeroArgEvent};
 use crate::caribou::input::Key;
+use crate::caribou::property::{Property, PropertyInit};
 
 pub struct Layout;
 
 pub struct LayoutData {
-    pub children: RefCell<Vec<Rc<Component>>>,
-    pub background: Property<Brush>,
-    pub border: Property<Brush>,
-    pub enabled: Property<bool>,
-    cur_hov: RefCell<Vec<Rc<Component>>>,
+    cur_hov: RefCell<Vec<WidgetRef>>,
     cur_pos: RefCell<IntPair>,
 }
 
 impl Layout {
-    pub fn create() -> Rc<Component> {
-        let comp = Component::create();
-        comp.on_draw.subscribe(Box::new(|comp| {
+    pub fn create() -> Widget {
+        let widget = create_widget();
+        widget.on_draw.subscribe(Box::new(|comp| {
             let mut batch = Batch::new();
-            let data = comp.data.get_as::<LayoutData>().unwrap();
-            data.children.borrow().iter().for_each(|child| {
+            comp.children.get().iter().for_each(|child| {
                 let transform = Transform {
                     translate: *child.position.get(),
                     clip_size: Some(*child.size.get()),
@@ -32,7 +29,7 @@ impl Layout {
                 };
                 let batches = child.on_draw.broadcast();
                 for entry in batches {
-                    batch.add(BatchOp::Batch {
+                    batch.add_op(BatchOp::Batch {
                         transform,
                         batch: entry,
                     });
@@ -40,70 +37,66 @@ impl Layout {
             });
             batch
         }));
-        comp.on_mouse_move.subscribe(Box::new(|comp, pos| {
-            let data = comp.data.get_as::<LayoutData>().unwrap();
-            let children = data.children.borrow();
+        widget.on_mouse_move.subscribe(Box::new(|comp, pos| {
+            let data: Ref<LayoutData> = comp.data.get_as().unwrap();
             let mut cur_hov = data.cur_hov.borrow_mut();
+            cur_hov.clean();
             let mut cur_pos = data.cur_pos.borrow_mut();
             *cur_pos = pos;
             let mut new_hov = Vec::new();
-            for child in children.iter() {
+            for child in comp.children.get().iter() {
                 let child_pos = *child.position.get();
                 let child_size = *child.size.get();
                 if Region::origin_size(child_pos, child_size).contains(pos.to_scalar()) {
                     let child_pos = pos - child_pos.to_int();
-                    if !cur_hov.comp_contains(child) {
+                    if !cur_hov.contains_ref(&child.refer()) {
                         child.on_mouse_enter.broadcast();
                     } else {
                         child.on_mouse_move.broadcast(child_pos);
                     }
-                    new_hov.push(child.clone());
+                    new_hov.push(child.refer());
                 }
             }
             for child in cur_hov.iter() {
-                if !new_hov.comp_contains(child) {
-                    child.on_mouse_leave.broadcast();
+                if !new_hov.contains_ref(child) {
+                    child.acquire().unwrap().on_mouse_leave.broadcast();
                 }
             }
             *cur_hov = new_hov;
         }));
-        comp.on_mouse_leave.subscribe(Box::new(|comp| {
+        widget.on_mouse_leave.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<LayoutData>().unwrap();
             let mut cur_hov = data.cur_hov.borrow_mut();
+            cur_hov.clean();
             for child in cur_hov.iter() {
-                child.on_mouse_leave.broadcast();
+                child.acquire().unwrap().on_mouse_leave.broadcast();
             }
             cur_hov.clear();
         }));
-        comp.on_primary_down.subscribe(Box::new(|comp| {
+        widget.on_primary_down.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<LayoutData>().unwrap();
-            let cur_hov = data.cur_hov.borrow_mut();
+            let mut cur_hov = data.cur_hov.borrow_mut();
+            cur_hov.clean();
             for child in cur_hov.iter() {
-                child.on_primary_down.broadcast();
+                child.acquire().unwrap().on_primary_down.broadcast();
             }
         }));
-        comp.on_primary_up.subscribe(Box::new(|comp| {
+        widget.on_primary_up.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<LayoutData>().unwrap();
-            let cur_hov = data.cur_hov.borrow_mut();
+            let mut cur_hov = data.cur_hov.borrow_mut();
+            cur_hov.clean();
             for child in cur_hov.iter() {
-                child.on_primary_up.broadcast();
+                child.acquire().unwrap().on_primary_up.broadcast();
             }
         }));
-        comp.data.set(Some(Box::new(LayoutData {
-            children: RefCell::new(Vec::new()),
-            background: Property::new(Brush::transparent(),
-                                      Rc::downgrade(&comp)),
-            border: Property::new(Brush::transparent(),
-                                  Rc::downgrade(&comp)),
-            enabled: Property::new(false,
-                                   Rc::downgrade(&comp)),
+        widget.data.set(Some(Box::new(LayoutData {
             cur_hov: RefCell::new(vec![]),
             cur_pos: RefCell::new(Default::default())
         })));
-        comp
+        widget
     }
 
-    pub fn interpret(comp: &Rc<Component>) -> Option<Ref<LayoutData>> {
+    pub fn interpret(comp: &Widget) -> Option<Ref<LayoutData>> {
         comp.data.get_as::<LayoutData>()
     }
 }
@@ -117,24 +110,22 @@ pub enum ButtonState {
 }
 
 pub struct ButtonData {
-    pub text: Property<Rc<String>>,
+    pub text: Property<String>,
     pub draw_normal: ZeroArgEvent<Batch>,
     pub draw_hover: ZeroArgEvent<Batch>,
     pub draw_pressed: ZeroArgEvent<Batch>,
     pub draw_disabled: ZeroArgEvent<Batch>,
-    pub enabled: Property<bool>,
     state: RefCell<ButtonState>,
     focused: RefCell<bool>,
 }
 
 impl Button {
-    pub fn create() -> Rc<Component> {
-        let comp = Component::create();
+    pub fn create() -> Widget {
+        let comp = create_widget();
         comp.on_draw.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
             let state = data.state.borrow();
-            let enabled =  *data.enabled.get();
-            if enabled {
+            if comp.enabled.is_true() {
                 match &*state {
                     ButtonState::Normal => data.draw_normal.broadcast(),
                     ButtonState::Hover => data.draw_hover.broadcast(),
@@ -153,8 +144,7 @@ impl Button {
         comp.on_primary_up.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
             data.state.replace(ButtonState::Hover);
-            let enabled = *data.enabled.get();
-            if enabled {
+            if comp.enabled.is_true() {
                 comp.action.broadcast(Rc::new(()));
             }
             Caribou::request_redraw();
@@ -171,18 +161,17 @@ impl Button {
         }));
         comp.size.set((100.0, 30.0).into());
         comp.data.set(Some(Box::new(ButtonData {
-            text: comp.init_property(Rc::new("Button".to_string())),
+            text: comp.init_property("按钮".to_string()),
             draw_normal: comp.init_event(),
             draw_hover: comp.init_event(),
             draw_pressed: comp.init_event(),
             draw_disabled: comp.init_event(),
-            enabled: comp.init_property(true),
             state: RefCell::new(ButtonState::Normal),
             focused: RefCell::new(false)
         })));
         comp.on_gain_focus.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<ButtonData>().unwrap();
-            if *data.enabled.get() {
+            if comp.enabled.is_true() {
                 data.focused.replace(true);
                 Caribou::request_redraw();
                 println!("Gained focus!");
@@ -223,18 +212,18 @@ impl Button {
         comp
     }
 
-    pub fn interpret(comp: &Rc<Component>) -> Option<Ref<ButtonData>> {
+    pub fn interpret(comp: &Widget) -> Option<Ref<ButtonData>> {
         comp.data.get_as::<ButtonData>()
     }
 }
 
 fn button_default_style_on_draw(
     border_mat: Material, back_mat: Material, caption_mat: Material
-) -> Box<dyn Fn(Rc<Component>) -> Batch> {
+) -> Box<dyn Fn(Widget) -> Batch> {
     Box::new(move |comp| {
         let mut batch = Batch::new();
         let data = comp.data.get_as::<ButtonData>().unwrap();
-        batch.add(BatchOp::Path {
+        batch.add_op(BatchOp::Path {
             transform: Transform::default(),
             path: Path::from_vec(vec![
                 PathOp::Rect((1.0, 1.0).into(),
@@ -248,7 +237,7 @@ fn button_default_style_on_draw(
             }
         });
         if *data.focused.borrow() {
-            batch.add(BatchOp::Path {
+            batch.add_op(BatchOp::Path {
                 transform: Transform::default(),
                 path: Path::from_vec(vec![
                     PathOp::Rect((1.0, 1.0).into(),
@@ -261,18 +250,13 @@ fn button_default_style_on_draw(
                 }
             });
         }
-        batch.add(BatchOp::Text {
+        batch.add_op(BatchOp::Text {
             transform: Transform {
                 translate: comp.size.get().times(0.5),
                 ..Transform::default()
             },
-            text: data.text.get().clone(),
-            font: Font {
-                family: Rc::new("Arial".to_string()),
-                size: 16.0,
-                weight: 500,
-                slant: FontSlant::Normal,
-            },
+            text: data.text.get_cloned(),
+            font: comp.font.get_cloned(),
             alignment: TextAlignment::Center,
             brush: Brush {
                 stroke_mat: Material::Transparent,
@@ -322,8 +306,8 @@ pub struct TextFieldData {
 }
 
 impl TextField {
-    pub fn create() -> Rc<Component> {
-        let comp = Component::create();
+    pub fn create() -> Widget {
+        let comp = create_widget();
         comp.on_draw.subscribe(Box::new(|comp| {
             let data = comp.data.get_as::<TextFieldData>().unwrap();
             if *data.focused.borrow() {

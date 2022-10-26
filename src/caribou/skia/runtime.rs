@@ -4,19 +4,19 @@ use glutin::{ContextWrapper, GlProfile, PossiblyCurrent};
 use glutin::event_loop::{ControlFlow, EventLoop};
 use glutin::window::{Window, WindowBuilder};
 use gl::types::*;
-use glutin::dpi::{Position};
+use glutin::dpi::Position;
 use glutin::event::{ElementState, Event, Ime, KeyboardInput, ModifiersState, MouseButton, ScanCode, VirtualKeyCode, WindowEvent};
 use log::{info, warn};
 use skia_safe::gpu::{BackendRenderTarget, DirectContext, SurfaceOrigin};
 use skia_safe::gpu::gl::{Format, FramebufferInfo};
 use skia_safe::{Canvas, Color, ColorType, FontMgr, FontStyle, Matrix, Paint, PaintStyle, Picture, PictureRecorder, Point, Rect, Size, Surface, TextBlob, TextBlobBuilder, Vector};
-use crate::caribou::basic::{Layout};
-use crate::caribou::{Caribou};
-use crate::caribou::draw::{BatchConsolidation, BatchOp, Brush, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
+use crate::caribou::widgets::Layout;
+use crate::caribou::Caribou;
+use crate::caribou::batch::{BatchConsolidation, BatchOp, Brush, FontSlant, Material, Path, PathOp, TextAlignment, Transform};
 use crate::caribou::input::{Key, KeyEvent};
 use crate::caribou::math::IntPair;
-use crate::caribou::skia::draw::{skia_render_batch};
 use crate::caribou::skia::input::gl_virtual_to_key;
+use crate::caribou::skia::skia_render_batch;
 
 type WindowedContext = ContextWrapper<PossiblyCurrent, Window>;
 
@@ -97,6 +97,7 @@ pub fn skia_bootstrap() {
             format: Format::RGBA8.into(),
         }
     };
+
 
     windowed_context
         .window();

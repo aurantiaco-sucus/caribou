@@ -1,49 +1,32 @@
 use std::any::Any;
 use std::cell::{Ref, RefCell};
+use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::rc::Rc;
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use crate::caribou::math::ScalarPair;
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct Batch {
-    data: Rc<RefCell<Vec<BatchOp>>>,
+    data: Arc<RwLock<Vec<BatchOp>>>,
 }
 
 impl Batch {
     pub fn new() -> Batch {
-        Batch {
-            data: Rc::new(RefCell::new(Vec::new())),
-        }
+        Batch { data: Arc::new(Vec::new().into()) }
     }
 
-    pub fn add(&mut self, op: BatchOp) {
-        self.data.borrow_mut().push(op);
+    pub fn add_op(&self, op: BatchOp) {
+        self.data.write().unwrap().push(op);
     }
 
-    pub fn add_batch(&mut self, batch: Batch) {
-        self.data.borrow_mut().append(&mut batch.data.borrow_mut());
+    pub fn append(&self, other: Batch) {
+        self.data.write().unwrap().extend(other.data.read().unwrap().clone());
     }
 
-    pub fn iter(&self) -> BatchIter {
-        BatchIter {
-            data: self.data.clone(),
-            index: 0,
-        }
-    }
-}
-
-pub struct BatchIter {
-    data: Rc<RefCell<Vec<BatchOp>>>,
-    index: usize,
-}
-
-impl Iterator for BatchIter {
-    type Item = BatchOp;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let index = self.index;
-        self.index += 1;
-        self.data.borrow().get(index).cloned()
+    pub fn data(&self) -> LockResult<RwLockReadGuard<Vec<BatchOp>>> {
+        self.data.read()
     }
 }
 
@@ -55,7 +38,7 @@ impl BatchConsolidation for Vec<Batch> {
     fn consolidate(self) -> Batch {
         let mut batch = Batch::new();
         for entry in self {
-            batch.add_batch(entry);
+            batch.append(entry);
         }
         batch
     }
@@ -74,7 +57,7 @@ pub enum BatchOp {
     },
     Text {
         transform: Transform,
-        text: Rc<String>,
+        text: String,
         font: Font,
         alignment: TextAlignment,
         brush: Brush,
@@ -112,72 +95,50 @@ pub enum TextAlignment {
     Center
 }
 
+pub trait PictImpl: Send + Sync + Debug {
+    fn get(&self) -> Box<dyn Any>;
+}
+
 #[derive(Debug, Clone)]
 pub struct Pict {
-    data: Rc<RefCell<Box<dyn Any>>>
+    data: Arc<RwLock<Box<dyn PictImpl>>>,
 }
 
 impl Pict {
-    pub fn encapsulate<T: Any>(data: T) -> Pict {
-        Pict {
-            data: Rc::new(RefCell::new(Box::new(data)))
-        }
+    pub fn new(data: Box<dyn PictImpl>) -> Pict {
+        Pict { data: Arc::new(RwLock::new(data)) }
     }
 
-    pub fn downcast<T: Any>(&self) -> Option<Ref<T>> {
-        match Ref::filter_map(self.data.borrow(),
-                              |x| x.downcast_ref::<T>())
-        { Ok(val) => Some(val), Err(_) => None }
+    pub fn data(&self) -> LockResult<RwLockReadGuard<Box<dyn PictImpl>>> {
+        self.data.read()
     }
 }
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct Path {
-    data: Rc<RefCell<Vec<PathOp>>>
+    data: Arc<RwLock<Vec<PathOp>>>
 }
 
 impl Path {
     pub fn new() -> Path {
-        Path {
-            data: Rc::new(RefCell::new(Vec::new())),
-        }
+        Path { data: Arc::new(Vec::new().into()) }
     }
     
     pub fn from_vec(data: Vec<PathOp>) -> Path {
-        Path {
-            data: Rc::new(RefCell::new(data)),
-        }
+        Path { data: Arc::new(data.into()) }
     }
 
     pub fn add(&mut self, op: PathOp) {
-        self.data.borrow_mut().push(op);
+        self.data.write().unwrap().push(op);
     }
 
     pub fn add_path(&mut self, path: Path) {
-        self.data.borrow_mut().append(&mut path.data.borrow_mut());
+        self.data.write().unwrap().extend(path.data.write().unwrap().clone());
     }
 
-    pub fn iter(&self) -> PathIter {
-        PathIter {
-            data: self.data.clone(),
-            index: 0,
-        }
-    }
-}
-
-pub struct PathIter {
-    data: Rc<RefCell<Vec<PathOp>>>,
-    index: usize,
-}
-
-impl Iterator for PathIter {
-    type Item = PathOp;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let index = self.index;
-        self.index += 1;
-        self.data.borrow().get(index).cloned()
+    pub fn data(&self) -> LockResult<RwLockReadGuard<Vec<PathOp>>> {
+        self.data.read()
     }
 }
 
@@ -226,6 +187,12 @@ impl Brush {
     }
 }
 
+impl Default for Brush {
+    fn default() -> Self {
+        Brush::transparent()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Material {
     Transparent,
@@ -234,10 +201,21 @@ pub enum Material {
 
 #[derive(Debug, Clone)]
 pub struct Font {
-    pub family: Rc<String>,
+    pub family: Arc<String>,
     pub size: f32,
     pub weight: i32,
     pub slant: FontSlant,
+}
+
+impl Default for Font {
+    fn default() -> Self {
+        Font {
+            family: Arc::new("DengXian".to_string()),
+            size: 12.0,
+            weight: 400,
+            slant: FontSlant::Normal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
